@@ -36,13 +36,26 @@ class EventSession(object):
 	def log_event(self, event: 'Event') -> None:
 		self._event_stack.append(event)
 
+	def event_finished(self, event: 'Event') -> None:
+		pass
+
 	def get_time_stamp(self) -> int:
 		return len(self._event_stack)
 
-	def resolve_event(self, event_type: 't.Type[Event]', parent: t.Optional[t.Any] = None, **kwargs) -> t.Any:
+	def resolve_event(
+		self,
+		event_type: 't.Type[Event]',
+		parent: t.Optional[t.Any] = None,
+		**kwargs,
+	) -> t.Any:
 		return event_type(session=self, parent=parent, **kwargs).resolve()
 
-	def create_condition(self, condition_type: 't.Type[Condition]', parent: 't.Optional[Event]' = None, **kwargs) -> 'Condition':
+	def create_condition(
+		self,
+		condition_type: 't.Type[Condition]',
+		parent: 't.Optional[Event]' = None,
+		**kwargs,
+	) -> 'Condition':
 		condition = condition_type(session=self, **kwargs)
 		self.resolve_event(ConnectCondition, parent=parent, condition=condition)
 		return condition
@@ -173,6 +186,8 @@ class Event(Sourced, metaclass=ABCMeta):
 
 		result = self.payload(**kwargs)
 
+		self._session.event_finished(self)
+
 		self._session.resolve_reactions(self, True)
 		self._session.dispatcher.send(signal=self.__class__.__name__, source=self)
 
@@ -237,6 +252,7 @@ class Event(Sourced, metaclass=ABCMeta):
 			).resolve()
 		except EventException:
 			return None
+
 
 class Condition(Sourced):
 	trigger = ''
