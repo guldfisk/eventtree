@@ -7,6 +7,9 @@ from abc import ABCMeta, abstractmethod
 from eventdispatch.dispatcher import DispatchSession
 
 
+T = t.TypeVar('T')
+
+
 def _dict_merge(*dicts) -> t.Dict:
     result = {}
     for dictionary in dicts:
@@ -144,7 +147,7 @@ class Event(Sourced, metaclass=ABCMeta):
         return self._children
 
     @property
-    def values(self):
+    def values(self) -> t.Mapping[str, t.Any]:
         return self._values
 
     @property
@@ -510,14 +513,18 @@ class StaticAttributeModification(Continuous):
         return self
 
 
-class ProtectedAttribute(object):
-    def __init__(self, owner: SessionBound, name: str, value: t.Any):
+class ProtectedAttributeBase(t.Generic[T]):
+
+    def __init__(self, owner: SessionBound, name: str):
         self._owner = owner
         self._name = name
-        self._value = value
 
-    def get(self):
-        _value = copy.copy(self._value)
+    @abstractmethod
+    def _get_value(self) -> T:
+        pass
+
+    def get(self) -> T:
+        _value = self._get_value()
         for response in sorted(
             [
                 o[1]
@@ -525,7 +532,7 @@ class ProtectedAttribute(object):
                 self._owner._session.dispatcher.send(
                     signal = '_aa_' + self._name,
                     owner = self._owner,
-                    value = self._value,
+                    value = _value,
                 )
             ],
             key = lambda modification: modification.time_stamp,
@@ -534,14 +541,38 @@ class ProtectedAttribute(object):
                 _value = response.resolve(self, _value)
         return _value
 
-    def set(self, val):
-        self._value = val
-
     @property
     def owner(self) -> SessionBound:
         return self._owner
 
 
+class ProtectedAttribute(ProtectedAttributeBase[T]):
+
+    def __init__(self, owner: SessionBound, name: str, value: t.Any):
+        super().__init__(owner, name)
+        self._value = value
+
+    def _get_value(self) -> T:
+        return copy.copy(self._value)
+
+    def set(self, value: T) -> None:
+        self._value = value
+
+
+class ProtectedDynamicAttribute(ProtectedAttributeBase[T]):
+
+    def __init__(self, owner: SessionBound, name: str, value_getter: t.Callable[[ProtectedDynamicAttribute], T]):
+        super().__init__(owner, name)
+        self._value_getter = value_getter
+
+    def _get_value(self) -> T:
+        return self._value_getter(self)
+
+
 class Attributed(SessionBound):
-    def pa(self, name: str, initial_value: t.Any):
+
+    def pa(self, name: str, initial_value: T) -> ProtectedAttribute[T]:
         return ProtectedAttribute(self, name, initial_value)
+
+    def pda(self, name: str, getter: t.Callable[[ProtectedDynamicAttribute], T]) -> T:
+        return ProtectedDynamicAttribute(self, name, getter)
