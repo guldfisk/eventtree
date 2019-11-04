@@ -77,26 +77,18 @@ class EventSession(object):
             options=options,
         )
 
-    # def _order_triggers(self, parent: t.Optional[Event] = None) -> None:
-    # 	self.resolve_event(
-    # 		self._trigger_orderer,
-    # 		parent = parent,
-    # 		triggers = self._trigger_queue,
-    # 	)
-
-    # def choose_reaction(self, reactions: t.List[Reaction]') -> 't.Optional[Reaction]:
-    # 	return None
-
     def resolve_reactions(self, event: Event, post: bool):
         pass
 
 
 class SessionBound(object):
+
     def __init__(self, session: EventSession):
         self._session = session
 
 
 class Sourced(SessionBound):
+
     def __init__(self, session: EventSession, source: t.Any = None):
         super().__init__(session)
         self._source = source
@@ -261,7 +253,7 @@ class Event(Sourced, metaclass=ABCMeta):
 
 
 class Condition(Sourced):
-    trigger = ''
+    trigger: str = ''
 
     def __init__(self, session, source: t.Any=None, **kwargs):
         super().__init__(session, source)
@@ -270,27 +262,27 @@ class Condition(Sourced):
         self.condition = kwargs.get('condition', self.condition)
         self.time_stamp = -1
 
-    def get_trigger(self, **kwargs):
+    def get_trigger(self, **kwargs) -> str:
         return self.trigger
 
-    def condition(self, source: t.Optional[t.Any] = None):
+    def condition(self, source: t.Optional[t.Any] = None) -> bool:
         return True
 
-    def load(self, source: t.Optional[Event] = None, **kwargs):
+    def load(self, source: t.Optional[Event] = None, **kwargs) -> t.Any:
         if self.condition(source):
             return self.successful_load(source)
 
-    def successful_load(self, source: t.Optional[Event] = None):
+    def successful_load(self, source: t.Optional[Event] = None) -> t.Any:
         pass
 
-    def _connect(self):
+    def _connect(self) -> None:
         self.time_stamp = self._session.get_time_stamp()
-        self._session._conditions.add(self.condition)
+        # self._session._conditions.add(self.condition)
         self._session.dispatcher.connect(self.load, signal=self.get_trigger())
 
-    def _disconnect(self):
+    def _disconnect(self) -> None:
         self._session.dispatcher.disconnect(self.load, signal=self.get_trigger())
-        self._session._conditions.discard(self.condition)
+        # self._session._conditions.discard(self.condition)
 
 
 class ChooseReplacement(Event):
@@ -301,33 +293,6 @@ class ChooseReplacement(Event):
 
     def payload(self, **kwargs):
         return sorted(self.options, key=lambda replacement: replacement.time_stamp)[0]
-
-
-# class OrderTriggers(Event):
-#
-# 	@property
-# 	def triggers(self) -> t.List[TriggerPack]:
-# 		return self._values['triggers']
-#
-# 	def payload(self, **kwargs):
-# 		pass
-#
-#
-# class ResolveTriggers(Event):
-#
-# 	def payload(self, **kwargs):
-# 		self._triggers = list(self._session._trigger_queue)
-# 		self._stack = list(self._session._stack)
-# 		if not self._triggers:
-# 			return
-# 		self._session._order_triggers(parent=self)
-# 		self._session._stack.extend(self._session._trigger_queue)
-# 		self._session._trigger_queue[:] = []
-# 		print(self._session._stack)
-# 		while self._session._stack:
-# 			pack = self._session._stack.pop()
-# 			print(pack)
-# 			pack.resolve(self)
 
 
 class ConnectCondition(Event):
@@ -364,16 +329,16 @@ class Replacement(Condition):
         super().__init__(session, source, **kwargs)
         self._replace = kwargs.get('replace', self._replace)
 
-    def get_trigger(self):
+    def get_trigger(self) -> str:
         return '_try_' + self.trigger
 
-    def successful_load(self, source: t.Optional[t.Any] = None):
+    def successful_load(self, source: t.Optional[t.Any] = None) -> Replacement:
         return self
 
-    def _replace(self, event: Event):
+    def _replace(self, event: Event) -> None:
         pass
 
-    def replace(self, event: Event):
+    def replace(self, event: Event) -> None:
         self._replace(event)
 
 
@@ -462,7 +427,7 @@ class Continuous(Condition):
     def terminate_condition(self, **kwargs):
         return True
 
-    def terminate(self):
+    def terminate(self, source, **kwargs):
         if self.terminate_condition():
             self._disconnect()
 
@@ -475,6 +440,10 @@ class Continuous(Condition):
         self._session.dispatcher.disconnect(self.terminate, signal=self.get_terminate_trigger())
 
 
+class ContinuousReplacement(Continuous, Replacement):
+    pass
+
+
 class DelayedTrigger(Trigger):
     name = 'BaseDelayedTrigger'
 
@@ -483,12 +452,21 @@ class DelayedTrigger(Trigger):
         self._session.disconnect_condition(self, parent=source)
 
 
-class DelayedReplacement(Replacement):
-    name = 'BaseDelayedReplacement'
+class DelayedMixin(object):
+    _session: EventSession
+    _replace: t.Callable
 
     def replace(self, event: Event):
         self._session.disconnect_condition(self, parent=event.parent)
         self._replace(event)
+
+
+class DelayedReplacement(DelayedMixin, Replacement):
+    name = 'BaseDelayedReplacement'
+
+
+class ContinuousDelayedReplacement(DelayedMixin, ContinuousReplacement):
+    name = 'BaseContinuousDelayedReplacement'
 
 
 class SingleAttemptReplacement(Replacement):
