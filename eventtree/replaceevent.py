@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import typing as t
 from abc import ABCMeta, abstractmethod
 
@@ -18,7 +17,7 @@ def _dict_merge(*dicts) -> t.Dict:
 
 
 class EventSession(object):
-    
+
     def __init__(self):
         self._dispatch_session = DispatchSession()
 
@@ -41,7 +40,7 @@ class EventSession(object):
     def log_event(self, event: Event) -> None:
         self._event_stack.append(event)
 
-    def event_finished(self, event: Event) -> None:
+    def event_finished(self, event: Event, success: bool) -> None:
         pass
 
     def get_time_stamp(self) -> int:
@@ -50,10 +49,11 @@ class EventSession(object):
     def resolve_event(
         self,
         event_type: t.Type[Event],
-        parent: t.Optional[t.Any] = None,
+        source: t.Optional[Event] = None,
+        parent: t.Optional[Event] = None,
         **kwargs,
     ) -> t.Any:
-        return event_type(session=self, parent=parent, **kwargs).resolve()
+        return event_type(session = self, source = source, parent = parent, **kwargs).resolve()
 
     def create_condition(
         self,
@@ -61,20 +61,20 @@ class EventSession(object):
         parent: t.Optional[Event] = None,
         **kwargs,
     ) -> Condition:
-        condition = condition_type(session=self, **kwargs)
-        self.resolve_event(ConnectCondition, parent=parent, condition=condition)
+        condition = condition_type(session = self, **kwargs)
+        self.resolve_event(ConnectCondition, parent = parent, condition = condition)
         return condition
 
     def connect_condition(self, condition: Condition, parent: t.Optional[Event] = None) -> None:
-        self.resolve_event(ConnectCondition, parent=parent, condition=condition)
+        self.resolve_event(ConnectCondition, parent = parent, condition = condition)
 
     def disconnect_condition(self, condition: Condition, parent: t.Optional[Event] = None) -> None:
-        self.resolve_event(DisconnectCondition, parent=parent, condition=condition)
+        self.resolve_event(DisconnectCondition, parent = parent, condition = condition)
 
     def choose_replacement(self, options: t.Sequence[Replacement]) -> Replacement:
         return self.resolve_event(
             self._replacement_chooser,
-            options=options,
+            options = options,
         )
 
     def resolve_reactions(self, event: Event, post: bool):
@@ -85,6 +85,10 @@ class SessionBound(object):
 
     def __init__(self, session: EventSession):
         self._session = session
+
+    @property
+    def session(self) -> session:
+        return self._session
 
 
 class Sourced(SessionBound):
@@ -114,13 +118,13 @@ class EventResolutionException(EventException):
     pass
 
 
-class Event(Sourced, metaclass=ABCMeta):
+class Event(Sourced, metaclass = ABCMeta):
 
     def __init__(
         self,
         session: EventSession,
         source: t.Any = None,
-        parent: 'Event' = None,
+        parent: Event = None,
         replaced_by: t.Set[Replacement] = None,
         **kwargs,
     ):
@@ -162,7 +166,7 @@ class Event(Sourced, metaclass=ABCMeta):
         replacements = [
             value
             for connected, value in
-            self._session.dispatcher.send(signal='_try_' + self.__class__.__name__, source=self)
+            self._session.dispatcher.send(signal = '_try_' + self.__class__.__name__, source = self)
             if not value in self._replaced_by
         ]
 
@@ -180,14 +184,18 @@ class Event(Sourced, metaclass=ABCMeta):
         self._session.log_event(self)
         self._session.resolve_reactions(self, False)
 
-        self._session.dispatcher.send(signal= '_pre_respond_' + self.__class__.__name__, source=self)
+        self._session.dispatcher.send(signal = '_pre_respond_' + self.__class__.__name__, source = self)
 
-        result = self.payload(**kwargs)
+        try:
+            result = self.payload(**kwargs)
+        except EventException:
+            self._session.event_finished(self, False)
+            raise
 
-        self._session.event_finished(self)
+        self._session.event_finished(self, True)
 
         self._session.resolve_reactions(self, True)
-        self._session.dispatcher.send(signal=self.__class__.__name__, source=self)
+        self._session.dispatcher.send(signal = self.__class__.__name__, source = self)
 
         return result
 
@@ -255,7 +263,7 @@ class Event(Sourced, metaclass=ABCMeta):
 class Condition(Sourced):
     trigger: str = ''
 
-    def __init__(self, session, source: t.Any=None, **kwargs):
+    def __init__(self, session, source: t.Any = None, **kwargs):
         super().__init__(session, source)
         self.trigger = kwargs.get('trigger', self.trigger)
         self.successful_load = kwargs.get('successful_load', self.successful_load)
@@ -265,11 +273,11 @@ class Condition(Sourced):
     def get_trigger(self, **kwargs) -> str:
         return self.trigger
 
-    def condition(self, source: t.Optional[t.Any] = None) -> bool:
+    def condition(self, source: t.Any, **kwargs) -> bool:
         return True
 
     def load(self, source: t.Optional[Event] = None, **kwargs) -> t.Any:
-        if self.condition(source):
+        if self.condition(source, **kwargs):
             return self.successful_load(source)
 
     def successful_load(self, source: t.Optional[Event] = None) -> t.Any:
@@ -278,10 +286,10 @@ class Condition(Sourced):
     def _connect(self) -> None:
         self.time_stamp = self._session.get_time_stamp()
         # self._session._conditions.add(self.condition)
-        self._session.dispatcher.connect(self.load, signal=self.get_trigger())
+        self._session.dispatcher.connect(self.load, signal = self.get_trigger())
 
     def _disconnect(self) -> None:
-        self._session.dispatcher.disconnect(self.load, signal=self.get_trigger())
+        self._session.dispatcher.disconnect(self.load, signal = self.get_trigger())
         # self._session._conditions.discard(self.condition)
 
 
@@ -292,7 +300,7 @@ class ChooseReplacement(Event):
         return self._values['options']
 
     def payload(self, **kwargs):
-        return sorted(self.options, key=lambda replacement: replacement.time_stamp)[0]
+        return sorted(self.options, key = lambda replacement: replacement.time_stamp)[0]
 
 
 class ConnectCondition(Event):
@@ -433,11 +441,11 @@ class Continuous(Condition):
 
     def _connect(self):
         super(Continuous, self)._connect()
-        self._session.dispatcher.connect(self.terminate, signal=self.get_terminate_trigger())
+        self._session.dispatcher.connect(self.terminate, signal = self.get_terminate_trigger())
 
     def _disconnect(self):
         super(Continuous, self)._disconnect()
-        self._session.dispatcher.disconnect(self.terminate, signal=self.get_terminate_trigger())
+        self._session.dispatcher.disconnect(self.terminate, signal = self.get_terminate_trigger())
 
 
 class ContinuousReplacement(Continuous, Replacement):
@@ -449,7 +457,7 @@ class DelayedTrigger(Trigger):
 
     def successful_load(self, source: t.Optional[t.Any] = None):
         super().successful_load(source)
-        self._session.disconnect_condition(self, parent=source)
+        self._session.disconnect_condition(self, parent = source)
 
 
 class DelayedMixin(object):
@@ -457,7 +465,7 @@ class DelayedMixin(object):
     _replace: t.Callable
 
     def replace(self, event: Event):
-        self._session.disconnect_condition(self, parent=event.parent)
+        self._session.disconnect_condition(self, parent = event.parent)
         self._replace(event)
 
 
@@ -477,80 +485,55 @@ class SingleAttemptReplacement(Replacement):
         return super().successful_load(source)
 
 
-class StaticAttributeModification(Continuous):
-    name = 'base_ad_continuous'
+class StaticAttributeModification(t.Generic[T], Condition):
     trigger = ''
 
     def get_trigger(self, **kwargs):
         return '_aa_' + self.trigger
 
-    def resolve(self, owner: ProtectedAttribute, value: t.Any):
+    def condition(self, source: t.Any, owner: t.Any, value: T, **kwargs) -> bool:
+        return True
+
+    def resolve(self, owner: S, value: T) -> T:
         return value
 
     def successful_load(self, parent: t.Optional[Event] = None):
         return self
 
 
-class ProtectedAttributeBase(t.Generic[T]):
-
-    def __init__(self, owner: SessionBound, name: str):
-        self._owner = owner
-        self._name = name
-
-    @abstractmethod
-    def _get_value(self) -> T:
-        pass
-
-    def get(self) -> T:
-        _value = self._get_value()
-        for response in sorted(
-            [
-                o[1]
-                for o in
-                self._owner._session.dispatcher.send(
-                    signal = '_aa_' + self._name,
-                    owner = self._owner,
-                    value = _value,
-                )
-            ],
-            key = lambda modification: modification.time_stamp,
-        ):
-            if response is not None:
-                _value = response.resolve(self, _value)
-        return _value
-
-    @property
-    def owner(self) -> SessionBound:
-        return self._owner
+S = t.TypeVar('S', bound = SessionBound)
 
 
-class ProtectedAttribute(ProtectedAttributeBase[T]):
+class EventProperty(property):
 
-    def __init__(self, owner: SessionBound, name: str, value: t.Any):
-        super().__init__(owner, name)
-        self._value = value
+    def __init__(
+        self,
+        getter: t.Callable[[S], T],
+        setter: t.Optional[t.Callable[[S, T], None]] = None,
+        deleter: t.Optional[t.Callable[[S], None]] = None,
+        doc: t.Optional[str] = None,
+        name: t.Optional[str] = None,
+    ) -> None:
+        self._name = getter.__name__ if name is None else name
+        super().__init__(self._getter_wrapper(getter), setter, deleter, doc)
 
-    def _get_value(self) -> T:
-        return copy.copy(self._value)
+    def _getter_wrapper(self, getter: t.Callable[[S], T]):
+        def _wrapped(owner: S):
+            base_value = getter(owner)
+            for response in sorted(
+                [
+                    value
+                    for connected, value in
+                    owner.session.dispatcher.send(
+                        '_aa_' + self._name,
+                        owner = owner,
+                        value = base_value,
+                    )
+                ],
+                key = lambda modification: modification.time_stamp,
+            ):
+                if response is not None:
+                    base_value = response.resolve(owner, base_value)
+            return base_value
+        return _wrapped
 
-    def set(self, value: T) -> None:
-        self._value = value
-
-
-class ProtectedDynamicAttribute(ProtectedAttributeBase[T]):
-
-    def __init__(self, owner: SessionBound, name: str, value_getter: t.Callable[[ProtectedDynamicAttribute], T]):
-        super().__init__(owner, name)
-        self._value_getter = value_getter
-
-    def _get_value(self) -> T:
-        return self._value_getter(self)
-
-
-class Attributed(SessionBound):
-
-    def pa(self, name: str, initial_value: T) -> ProtectedAttribute[T]:
-        return ProtectedAttribute(self, name, initial_value)
-
-    def pda(self, name: str, getter: t.Callable[[ProtectedDynamicAttribute], T]) -> T:
-        return ProtectedDynamicAttribute(self, name, getter)
